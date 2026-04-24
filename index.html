@@ -1,0 +1,380 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Agar-like Online</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    * { box-sizing: border-box }
+    html, body { height: 100%; margin: 0; font-family: system-ui, Segoe UI, Arial; background: #eef }
+    canvas { display: block; width: 100%; height: 100% }
+    #menu {
+      position: absolute;
+      left: 20px;
+      top: 20px;
+      padding: 14px;
+      background: rgba(255,255,255,0.95);
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      z-index: 10;
+    }
+    #menu h1 { margin: 0 0 10px 0; font-size: 24px }
+    #menu input { padding: 4px; margin: 4px 0; width: 100% }
+    #menu button { padding: 8px 16px; background: #2196f3; color: white; border: none; border-radius: 4px; cursor: pointer }
+    #menu button:hover { background: #1976d2 }
+    #menu p { font-size: 12px; margin: 10px 0 0 0 }
+    #hud {
+      position: absolute;
+      right: 20px;
+      top: 20px;
+      color: #222;
+      z-index: 10;
+    }
+    #leaderboard {
+      background: rgba(255,255,255,0.95);
+      padding: 10px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      min-width: 150px;
+      font-size: 14px;
+    }
+    #info {
+      margin-top: 8px;
+      background: rgba(255,255,255,0.95);
+      padding: 8px;
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .leader { padding: 2px 0 }
+  </style>
+</head>
+<body>
+  <div id="menu">
+    <h1>Agar-like</h1>
+    <label>Jméno:</label>
+    <input id="name" value="Player">
+    <br>
+    <button id="start">Start</button>
+    <p>
+      <b>Ovládání:</b><br>
+      🖱️ Myš = pohyb<br>
+      SPACE = split<br>
+    </p>
+    <p id="status">Připojuji...</p>
+  </div>
+  <canvas id="c"></canvas>
+  <div id="hud">
+    <div id="leaderboard"></div>
+    <div id="info"></div>
+  </div>
+
+  <script>
+    // Lokální single-player agar.io bez serveru — čistě JavaScript
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    let cw = canvas.width = window.innerWidth;
+    let ch = canvas.height = window.innerHeight;
+
+    window.addEventListener('resize', () => {
+      cw = canvas.width = window.innerWidth;
+      ch = canvas.height = window.innerHeight;
+    });
+
+    const menu = document.getElementById('menu');
+    const startBtn = document.getElementById('start');
+    const nameInput = document.getElementById('name');
+    const info = document.getElementById('info');
+    const leaderboard = document.getElementById('leaderboard');
+    const status = document.getElementById('status');
+
+    // Game state
+    let gameActive = false;
+    let myPlayer = null;
+    let players = [];
+    let bots = [];
+    let foods = [];
+
+    const WORLD_W = 2000;
+    const WORLD_H = 2000;
+    const FOOD_COUNT = 300;
+    const BOT_COUNT = 6;
+
+    function rand(min, max) { return Math.random() * (max - min) + min }
+
+    function spawnFood(n) {
+      for (let i = 0; i < n; i++) {
+        foods.push({
+          id: Math.random().toString(36).slice(2, 9),
+          x: rand(0, WORLD_W),
+          y: rand(0, WORLD_H),
+          mass: 1
+        });
+      }
+    }
+
+    function spawnBot() {
+      bots.push({
+        id: 'bot_' + Math.random().toString(36).slice(2, 9),
+        x: rand(0, WORLD_W),
+        y: rand(0, WORLD_H),
+        vx: 0,
+        vy: 0,
+        mass: 16 + rand(0, 10),
+        targetTimer: 0,
+        name: 'Bot'
+      });
+    }
+
+    function playerRadius(mass) { return Math.sqrt(mass) * 4 }
+
+    function dist(a, b) { const dx = a.x - b.x; const dy = a.y - b.y; return Math.sqrt(dx * dx + dy * dy) }
+
+    startBtn.onclick = () => {
+      gameActive = true;
+      myPlayer = {
+        id: 'player',
+        name: nameInput.value || 'Player',
+        x: WORLD_W / 2,
+        y: WORLD_H / 2,
+        vx: 0,
+        vy: 0,
+        mass: 30,
+        cells: []
+      };
+      players = [myPlayer];
+      bots = [];
+      foods = [];
+      for (let i = 0; i < BOT_COUNT; i++) spawnBot();
+      spawnFood(FOOD_COUNT);
+      menu.style.display = 'none';
+      status.style.display = 'none';
+    };
+
+    let mouseWorldX = 0, mouseWorldY = 0;
+    let camera = { x: 0, y: 0, zoom: 1 };
+
+    canvas.addEventListener('mousemove', e => {
+      if (!gameActive) return;
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      mouseWorldX = camera.x + (sx - cw / 2) / camera.zoom;
+      mouseWorldY = camera.y + (sy - ch / 2) / camera.zoom;
+      // Move player toward mouse
+      const dx = mouseWorldX - myPlayer.x;
+      const dy = mouseWorldY - myPlayer.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0) {
+        const max = Math.max(2, 6 - Math.sqrt(myPlayer.mass));
+        myPlayer.vx = (dx / dist) * max;
+        myPlayer.vy = (dy / dist) * max;
+      }
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.code === 'Space' && gameActive && myPlayer) {
+        e.preventDefault();
+        split();
+      }
+    });
+
+    function split() {
+      if (myPlayer.mass < 32) return;
+      const newMass = myPlayer.mass / 2;
+      myPlayer.mass = newMass;
+      const angle = Math.atan2(myPlayer.vy, myPlayer.vx);
+      const cell = {
+        id: 'cell_' + Date.now(),
+        x: myPlayer.x + Math.cos(angle) * 30,
+        y: myPlayer.y + Math.sin(angle) * 30,
+        vx: Math.cos(angle) * 8,
+        vy: Math.sin(angle) * 8,
+        mass: newMass,
+        mergeTimer: 200
+      };
+      myPlayer.cells.push(cell);
+    }
+
+    // Game loop
+    setInterval(() => {
+      if (!gameActive) return;
+
+      // Update player
+      myPlayer.x += myPlayer.vx;
+      myPlayer.y += myPlayer.vy;
+      myPlayer.x = Math.max(0, Math.min(WORLD_W, myPlayer.x));
+      myPlayer.y = Math.max(0, Math.min(WORLD_H, myPlayer.y));
+      myPlayer.vx *= 0.98;
+      myPlayer.vy *= 0.98;
+
+      // Update cells
+      for (let i = myPlayer.cells.length - 1; i >= 0; i--) {
+        const c = myPlayer.cells[i];
+        c.x += c.vx;
+        c.y += c.vy;
+        c.x = Math.max(0, Math.min(WORLD_W, c.x));
+        c.y = Math.max(0, Math.min(WORLD_H, c.y));
+        c.vx *= 0.96;
+        c.vy *= 0.96;
+        c.mergeTimer--;
+        if (c.mergeTimer <= 0 && Math.hypot(myPlayer.x - c.x, myPlayer.y - c.y) < playerRadius(myPlayer.mass) + playerRadius(c.mass)) {
+          myPlayer.mass += c.mass;
+          myPlayer.cells.splice(i, 1);
+        }
+      }
+
+      // Update bots
+      for (const bot of bots) {
+        bot.targetTimer--;
+        if (bot.targetTimer <= 0) {
+          bot.targetTimer = Math.floor(50 + Math.random() * 150);
+          if (Math.random() < 0.6 && foods.length) {
+            const f = foods[Math.floor(Math.random() * foods.length)];
+            bot.vx = (f.x - bot.x) * 0.02;
+            bot.vy = (f.y - bot.y) * 0.02;
+          } else {
+            bot.vx = rand(-1, 1);
+            bot.vy = rand(-1, 1);
+          }
+        }
+        bot.x += bot.vx * (3 - Math.sqrt(bot.mass) / 4);
+        bot.y += bot.vy * (3 - Math.sqrt(bot.mass) / 4);
+        bot.x = Math.max(0, Math.min(WORLD_W, bot.x));
+        bot.y = Math.max(0, Math.min(WORLD_H, bot.y));
+        bot.vx *= 0.99;
+        bot.vy *= 0.99;
+      }
+
+      // Eat food
+      function eatFood(eater, list) {
+        for (let i = list.length - 1; i >= 0; i--) {
+          const item = list[i];
+          const d = Math.hypot(eater.x - item.x, eater.y - item.y);
+          const r = playerRadius(eater.mass);
+          if (d < r) {
+            eater.mass += item.mass;
+            list.splice(i, 1);
+          }
+        }
+      }
+
+      eatFood(myPlayer, foods);
+      for (const bot of bots) eatFood(bot, foods);
+
+      // Eat entities
+      function eatEntities(eater, victims) {
+        for (let i = victims.length - 1; i >= 0; i--) {
+          const v = victims[i];
+          if (v === eater) continue;
+          const d = Math.hypot(eater.x - v.x, eater.y - v.y);
+          const re = playerRadius(eater.mass);
+          const rv = playerRadius(v.mass);
+          if (re > rv * 1.15 && d < re) {
+            eater.mass += v.mass * 0.9;
+            victims.splice(i, 1);
+          }
+        }
+      }
+
+      eatEntities(myPlayer, bots);
+      for (const bot of bots) {
+        eatEntities(bot, bots);
+        eatEntities(bot, [myPlayer]);
+      }
+
+      // Bots eat player?
+      for (const bot of bots) {
+        const d = Math.hypot(bot.x - myPlayer.x, bot.y - myPlayer.y);
+        const re = playerRadius(bot.mass);
+        const rv = playerRadius(myPlayer.mass);
+        if (re > rv * 1.15 && d < re) {
+          // Player dies
+          gameActive = false;
+          menu.style.display = 'block';
+          status.textContent = `Game Over! Score: ${Math.round(myPlayer.mass)}`;
+          status.style.display = 'block';
+        }
+      }
+
+      // Refill food
+      if (foods.length < FOOD_COUNT) spawnFood(FOOD_COUNT - foods.length);
+
+    }, 1000 / 25);
+
+    // Rendering
+    function draw() {
+      ctx.clearRect(0, 0, cw, ch);
+      if (!gameActive || !myPlayer) {
+        requestAnimationFrame(draw);
+        return;
+      }
+
+      // Camera
+      camera.x = myPlayer.x;
+      camera.y = myPlayer.y;
+      camera.zoom = Math.max(0.5, 1.2 - Math.sqrt(myPlayer.mass) / 100);
+
+      ctx.save();
+      ctx.translate(cw / 2, ch / 2);
+      ctx.scale(camera.zoom, camera.zoom);
+      ctx.translate(-camera.x, -camera.y);
+
+      // Foods
+      for (const f of foods) {
+        ctx.fillStyle = '#4caf50';
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Bots
+      for (const b of bots) {
+        const r = playerRadius(b.mass);
+        ctx.fillStyle = '#ff9800';
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(b.name, b.x, b.y - r - 6);
+      }
+
+      // Player
+      const pr = playerRadius(myPlayer.mass);
+      ctx.fillStyle = '#2196f3';
+      ctx.beginPath();
+      ctx.arc(myPlayer.x, myPlayer.y, pr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'white';
+      ctx.font = 'bold 14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(myPlayer.name, myPlayer.x, myPlayer.y - pr - 8);
+
+      // Player cells
+      for (const c of myPlayer.cells) {
+        const cr = playerRadius(c.mass);
+        ctx.fillStyle = 'rgba(33,150,243,0.7)';
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, cr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.restore();
+
+      // HUD
+      const allPlayers = [myPlayer, ...bots].sort((a, b) => b.mass - a.mass);
+      leaderboard.innerHTML = '<b>Leaderboard</b>' + allPlayers.slice(0, 8).map((p, i) =>
+        `<div class="leader">${i + 1}. ${p.name} (${Math.round(p.mass)})</div>`
+      ).join('');
+      info.textContent = `Mass: ${Math.round(myPlayer.mass)} | Cells: ${myPlayer.cells.length}`;
+
+      requestAnimationFrame(draw);
+    }
+
+    draw();
+
+    status.textContent = 'Ready!';
+  </script>
+</body>
+</html>
